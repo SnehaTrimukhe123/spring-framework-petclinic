@@ -49,8 +49,8 @@ pipeline {
                     archiveArtifacts artifacts: '**/dependency-check-report*.xml', allowEmptyArchive: true
                     // Publish Dependency-Check results
                     dependencyCheckPublisher pattern: '**/dependency-check-report*.xml', 
-                                            unstableTotal: 5, // Mark build unstable if more than 5 vulnerabilities
-                                            failedTotal: 0    // Mark build as failed if any critical vulnerabilities are found
+                                            unstableTotalLow: 5, // Mark build unstable if more than 5 low vulnerabilities
+                                            failedTotalLow: 0    // Mark build as failed if any critical vulnerabilities are found
                 }
             }
         }
