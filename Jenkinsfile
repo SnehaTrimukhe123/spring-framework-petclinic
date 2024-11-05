@@ -35,6 +35,42 @@ pipeline {
                 }
             }
         }
+
+        stage('Dependency Scanning') {
+            steps {
+                script {
+                    // Run Dependency-Check Maven plugin
+                    sh 'mvn dependency-check:check'
+                }
+            }
+            post {
+                always {
+                    // Archive Dependency-Check report
+                    archiveArtifacts artifacts: '**/dependency-check-report*.xml', allowEmptyArchive: true
+                    // Publish Dependency-Check results
+                    dependencyCheckPublisher pattern: '**/dependency-check-report*.xml', 
+                                            unstableTotal: 5, // Mark build unstable if more than 5 vulnerabilities
+                                            failedTotal: 0    // Mark build as failed if any critical vulnerabilities are found
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                script {
+                    sh 'mvn clean package'
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    // Assuming Docker is installed and configured on your Jenkins instance
+                    sh 'docker build -t petclinic:latest .'
+                }
+            }
+        }
     }
     post {
         always {
