@@ -7,7 +7,6 @@ pipeline {
         IMAGE_TAG = "latest"
         ECR_URL = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
     }
-
     stages {
         stage('Checkout Code') {
             steps {
@@ -17,7 +16,9 @@ pipeline {
 
         stage('Unit Test') {
             steps {
-                sh 'mvn clean test'
+                script {
+                    sh 'mvn clean test'
+                }
             }
             post {
                 always {
@@ -28,13 +29,17 @@ pipeline {
 
         stage('Static Code Analysis') {
             steps {
-                sh "mvn sonar:sonar -Dsonar.projectKey=spring-framework-petclinic"
+                script {
+                    sh "mvn sonar:sonar -Dsonar.projectKey=spring-framework-petclinic"
+                }
             }
         }
 
         stage('Dependency Scanning') {
             steps {
-                sh 'mvn dependency-check:check'
+                script {
+                    sh 'mvn dependency-check:check'
+                }
             }
             post {
                 always {
@@ -48,7 +53,9 @@ pipeline {
 
         stage('Lint Dockerfile') {
             steps {
-                sh 'docker run --rm -i hadolint/hadolint < Dockerfile > lint-report.txt'
+                script {
+                    sh 'docker run --rm -i hadolint/hadolint < Dockerfile > lint-report.txt'
+                }
             }
             post {
                 always {
@@ -57,20 +64,10 @@ pipeline {
             }
         }
 
-        stage('Build') {
-            steps {
-                sh 'mvn clean package'
-            }
-        }
-
         stage('Build Docker Image') {
             steps {
                 script {
-                    def commitId = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    def buildNumber = env.BUILD_NUMBER
-                    def dynamicTag = "${commitId}-${buildNumber}"
-                    IMAGE_TAG = dynamicTag
-                    
+                    sh 'mvn clean package'
                     sh "docker build -t ${ECR_REPO}:${IMAGE_TAG} ."
                 }
             }
@@ -89,27 +86,31 @@ pipeline {
                     archiveArtifacts artifacts: 'trivy-report.pdf', allowEmptyArchive: true
                 }
                 failure {
-                    mail to: 'snehatrimukhe12@gmail.com', subject: "Pipeline Failed", body: "Check Jenkins for vulnerability scan details."
+                    mail to: 'snehatrimukhe12@gmail.com', subject: "Pipeline Failed", body: "Check the Jenkins job for vulnerability details."
                 }
             }
         }
 
-        stage('OWASP ZAP Scan') {
+        stage('ZAP Baseline Scan') {
             steps {
-                script {
-                    def scanType = params.SCAN_TYPE ?: 'Baseline'
-                    if (scanType == 'FULL') {
-                        sh 'docker run --rm owasp/zap2docker-stable zap-full-scan.py -t http://localhost:8080 -r zap-report.html'
-                    } else if (scanType == 'API') {
-                        sh 'docker run --rm owasp/zap2docker-stable zap-api-scan.py -t http://localhost:8080 -r zap-report.html'
-                    } else {
-                        sh 'docker run --rm owasp/zap2docker-stable zap-baseline.py -t http://localhost:8080 -r zap-report.html'
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    script {
+                        def status = sh(script: '''#!/bin/bash
+                        docker run -v $PWD:/zap/wrk/:rw -t ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+                        -t http://3.145.98.239:8080 > zap_baselinereport.html
+                        ''', returnStatus: true)
+
+                        if (status == 0) {
+                            echo "ZAP scan completed successfully."
+                        } else {
+                            error "ZAP scan failed with status code: ${status}"
+                        }
                     }
                 }
             }
             post {
                 always {
-                    archiveArtifacts artifacts: 'zap-report.html', allowEmptyArchive: true
+                    archiveArtifacts artifacts: 'zap_baselinereport.html', allowEmptyArchive: true
                 }
             }
         }
@@ -120,15 +121,12 @@ pipeline {
                                                   usernameVariable: 'AWS_ACCESS_KEY_ID',
                                                   passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
                     script {
-                        // Configure AWS CLI for region and credentials
                         sh "aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID}"
                         sh "aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}"
                         sh "aws configure set region ${AWS_REGION}"
 
-                        // Log in to ECR
                         sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_URL}"
 
-                        // Tag and Push to ECR
                         sh "docker tag ${ECR_REPO}:${IMAGE_TAG} ${ECR_URL}:${IMAGE_TAG}"
                         sh "docker push ${ECR_URL}:${IMAGE_TAG}"
                     }
@@ -138,7 +136,9 @@ pipeline {
 
         stage('Run Docker Container') {
             steps {
-                sh "docker run -d -p 8080:8080 --name petclinic-container ${ECR_URL}:${IMAGE_TAG}"
+                script {
+                    sh "docker run -d -p 8080:8080 --name petclinic-container ${ECR_URL}:${IMAGE_TAG}"
+                }
             }
         }
     }
@@ -148,7 +148,7 @@ pipeline {
             archiveArtifacts artifacts: '**/target/*.jar', allowEmptyArchive: true
         }
         failure {
-            mail to: 'snehatrimukhe12@gmail.com', subject: "Pipeline Failed", body: "Check Jenkins for details."
+            mail to: 'snehatrimukhe12@gmail.com', subject: "Pipeline Failed", body: "Check the Jenkins job for details."
         }
     }
 }
