@@ -4,12 +4,10 @@ pipeline {
         AWS_ACCOUNT_ID = '481665085317'
         AWS_REGION = 'us-east-2'
         ECR_REPO = 'petclinic'
-        IMAGE_TAG = "${GIT_COMMIT}-${BUILD_NUMBER}"
+        IMAGE_TAG = "latest"
         ECR_URL = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
     }
-    parameters {
-        choice(name: 'scanType', choices: ['Baseline', 'API', 'FULL'], description: 'Choose the OWASP ZAP scan type')
-    }
+
     stages {
         stage('Checkout Code') {
             steps {
@@ -41,6 +39,9 @@ pipeline {
             post {
                 always {
                     archiveArtifacts artifacts: '**/dependency-check-report*.xml', allowEmptyArchive: true
+                    dependencyCheckPublisher pattern: '**/dependency-check-report*.xml',
+                                            unstableTotalLow: 5,
+                                            failedTotalLow: 0
                 }
             }
         }
@@ -56,9 +57,22 @@ pipeline {
             }
         }
 
+        stage('Build') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+
         stage('Build Docker Image') {
             steps {
-                sh "docker build -t ${ECR_REPO}:${IMAGE_TAG} ."
+                script {
+                    def commitId = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    def buildNumber = env.BUILD_NUMBER
+                    def dynamicTag = "${commitId}-${buildNumber}"
+                    IMAGE_TAG = dynamicTag
+                    
+                    sh "docker build -t ${ECR_REPO}:${IMAGE_TAG} ."
+                }
             }
         }
 
@@ -75,7 +89,7 @@ pipeline {
                     archiveArtifacts artifacts: 'trivy-report.pdf', allowEmptyArchive: true
                 }
                 failure {
-                    mail to: 'snehatrimukhe12@gmail.com', subject: "Pipeline Failed", body: "Check Jenkins for vulnerability details."
+                    mail to: 'snehatrimukhe12@gmail.com', subject: "Pipeline Failed", body: "Check Jenkins for vulnerability scan details."
                 }
             }
         }
@@ -83,19 +97,14 @@ pipeline {
         stage('OWASP ZAP Scan') {
             steps {
                 script {
-                    def zapScript = ""
-                    switch (params.scanType) {
-                        case "Baseline":
-                            zapScript = "zap-baseline.py"
-                            break
-                        case "API":
-                            zapScript = "zap-api-scan.py"
-                            break
-                        case "FULL":
-                            zapScript = "zap-full-scan.py"
-                            break
+                    def scanType = params.SCAN_TYPE ?: 'Baseline'
+                    if (scanType == 'FULL') {
+                        sh 'docker run --rm owasp/zap2docker-stable zap-full-scan.py -t http://localhost:8080 -r zap-report.html'
+                    } else if (scanType == 'API') {
+                        sh 'docker run --rm owasp/zap2docker-stable zap-api-scan.py -t http://localhost:8080 -r zap-report.html'
+                    } else {
+                        sh 'docker run --rm owasp/zap2docker-stable zap-baseline.py -t http://localhost:8080 -r zap-report.html'
                     }
-                    sh "docker run --rm -v $(pwd):/zap/wrk owasp/zap2docker-stable ${zapScript} -t http://localhost:8080 -r zap-report.html"
                 }
             }
             post {
@@ -107,13 +116,19 @@ pipeline {
 
         stage('Push to ECR') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'aws-credentials', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                withCredentials([usernamePassword(credentialsId: 'aws-credentials',
+                                                  usernameVariable: 'AWS_ACCESS_KEY_ID',
+                                                  passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
                     script {
+                        // Configure AWS CLI for region and credentials
                         sh "aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID}"
                         sh "aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}"
                         sh "aws configure set region ${AWS_REGION}"
 
+                        // Log in to ECR
                         sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_URL}"
+
+                        // Tag and Push to ECR
                         sh "docker tag ${ECR_REPO}:${IMAGE_TAG} ${ECR_URL}:${IMAGE_TAG}"
                         sh "docker push ${ECR_URL}:${IMAGE_TAG}"
                     }
